@@ -1,0 +1,19 @@
+[package]
+name = "advent_of_code_2024-rust"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "day01"
+path = "src/day01.rs"
+
+# [[bin]]
+# name = "day_02"
+# path = "src/day_02.rs"
+
+# [[bin]]
+# name = "day_03"
+# path = "src/day_03.rs"
+
+[dependencies]
+regex = "1.11.1"
