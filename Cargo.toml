@@ -7,13 +7,9 @@ edition = "2021"
 name = "day01"
 path = "src/day01.rs"
 
-# [[bin]]
-# name = "day_02"
-# path = "src/day_02.rs"
-
-# [[bin]]
-# name = "day_03"
-# path = "src/day_03.rs"
+[[bin]]
+name = "day02"
+path = "src/day02.rs"
 
 [dependencies]
 regex = "1.11.1"
