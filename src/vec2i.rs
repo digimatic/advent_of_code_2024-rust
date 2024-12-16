@@ -6,6 +6,12 @@ pub struct Vec2i {
     pub y: i32,
 }
 
+impl Vec2i {
+    pub fn new(x: i32, y: i32) -> Self {
+        Vec2i { x, y }
+    }
+}
+
 impl Default for Vec2i {
     fn default() -> Self {
         Vec2i { x: 0, y: 0 }
