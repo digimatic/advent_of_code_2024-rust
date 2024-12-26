@@ -1,7 +1,12 @@
-use advent_of_code_2024_rust::{map::Map, vec2i::Vec2i};
-use itertools::Itertools;
+use std::fmt::Display;
+use std::fs::File;
+use std::io::{Result, Write};
+use std::{
+    collections::{HashMap, HashSet},
+    env, fs,
+};
+
 use regex::Regex;
-use std::{collections::HashMap, collections::HashSet, env, fs};
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash)]
 enum GateType {
@@ -10,14 +15,27 @@ enum GateType {
     XOR,
 }
 
+impl Display for GateType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GateType::AND => write!(f, "AND"),
+            GateType::OR => write!(f, "OR"),
+            GateType::XOR => write!(f, "XOR"),
+        }
+    }
+}
+
 type Wires = HashMap<String, u64>;
 type Gate = (GateType, String, String, String);
 type Gates = Vec<Gate>;
 
+fn gate_to_string(gate: &Gate) -> String {
+    format!("{} {} {} -> {}", gate.1, gate.0, gate.2, gate.3)
+}
+
 fn parse(input: &str) -> (Wires, Gates) {
     let re1 = Regex::new(r"(\w+): (\d)").unwrap();
     let re2 = Regex::new(r"(\w+) (OR|XOR|AND) (\w+) -> (\w+)").unwrap();
-
     let mut wires: Wires = HashMap::new();
     let mut gates: Gates = Vec::new();
 
@@ -48,6 +66,135 @@ fn parse(input: &str) -> (Wires, Gates) {
     }
 
     (wires, gates)
+}
+
+// Open as pdf:
+//  dot -Tpdf -Gnodesep=0.5 -Granksep=0.5 diagram.dot -o circuit.pdf
+//  open circuit.pdf
+fn write_dot(gates: &Gates, filename: &str) -> Result<()> {
+    let mut file = File::create(filename)?;
+
+    writeln!(file, "digraph Circuit {{")?;
+    writeln!(file, "    rankdir=LR;")?;
+    writeln!(file, "    node [fontsize=10];")?;
+    writeln!(file, "    edge [fontsize=8];")?;
+
+    // First pass: group gates by their input pattern
+    let mut pattern_gates: HashMap<(String, String), Vec<(usize, &Gate)>> = HashMap::new();
+    for (i, gate @ (_, in1, in2, _)) in gates.iter().enumerate() {
+        // Extract the number part from input wires (e.g., "x05" -> "05")
+        if (in1.starts_with('x') || in1.starts_with('y'))
+            && (in2.starts_with('x') || in2.starts_with('y'))
+        {
+            let num1 = &in1[1..];
+            let num2 = &in2[1..];
+            if num1 == num2 {
+                pattern_gates
+                    .entry((num1.to_string(), num2.to_string()))
+                    .or_default()
+                    .push((i, gate));
+            }
+        }
+    }
+
+    // Create input node ranks
+    writeln!(file, "    // Input ranks")?;
+    for i in 0..45 {
+        writeln!(file, "    {{ rank=same; x{:02}; y{:02}; }}", i, i)?;
+        writeln!(file, "    x{:02} [shape=circle];", i)?;
+        writeln!(file, "    y{:02} [shape=circle];", i)?;
+    }
+
+    // Create output node ranks
+    writeln!(file, "\n    // Output ranks")?;
+    for i in 0..46 {
+        writeln!(file, "    z{:02} [shape=circle];", i)?;
+    }
+    writeln!(
+        file,
+        "    {{ rank=same; {} }}",
+        (0..46)
+            .map(|i| format!("z{:02}", i))
+            .collect::<Vec<_>>()
+            .join("; ")
+    )?;
+
+    // Write gates and connections, with pattern-based ranking
+    writeln!(file, "\n    // Gates and connections")?;
+
+    // First write pattern-matched gates with rank constraints
+    for ((_, _), gates_group) in &pattern_gates {
+        // Sort gates by type (XOR first, then AND, then OR)
+        let mut sorted_gates = gates_group.clone();
+        sorted_gates.sort_by_key(|(_, (gate_type, _, _, _))| match gate_type {
+            GateType::XOR => 0,
+            GateType::AND => 1,
+            GateType::OR => 2,
+        });
+
+        // Create a rank for this group
+        if sorted_gates.len() > 1 {
+            write!(file, "    {{ rank=same; ")?;
+            for (i, _) in &sorted_gates {
+                write!(file, "gate_{}; ", i)?;
+            }
+            writeln!(file, "}}")?;
+        }
+
+        // Write the gates
+        for (i, (gate_type, in1, in2, out)) in sorted_gates {
+            let gate_name = format!("gate_{}", i);
+            let shape = match gate_type {
+                GateType::AND => "box",
+                GateType::OR => "diamond",
+                GateType::XOR => "hexagon",
+            };
+            writeln!(
+                file,
+                "    {} [shape={}, label=\"{:?}\\n#{}\"];",
+                gate_name, shape, gate_type, i
+            )?;
+            writeln!(file, "    {} -> {};", in1, gate_name)?;
+            writeln!(file, "    {} -> {};", in2, gate_name)?;
+            writeln!(file, "    {} -> {};", gate_name, out)?;
+        }
+    }
+
+    // Write remaining gates
+    for (i, (gate_type, in1, in2, out)) in gates.iter().enumerate() {
+        if !pattern_gates
+            .values()
+            .any(|group| group.iter().any(|(idx, _)| *idx == i))
+        {
+            let gate_name = format!("gate_{}", i);
+            let shape = match gate_type {
+                GateType::AND => "box",
+                GateType::OR => "diamond",
+                GateType::XOR => "hexagon",
+            };
+            writeln!(
+                file,
+                "    {} [shape={}, label=\"{:?}\\n#{}\"];",
+                gate_name, shape, gate_type, i
+            )?;
+            writeln!(file, "    {} -> {};", in1, gate_name)?;
+            writeln!(file, "    {} -> {};", in2, gate_name)?;
+            writeln!(file, "    {} -> {};", gate_name, out)?;
+        }
+    }
+
+    // Add invisible edges to help maintain vertical alignment
+    writeln!(file, "\n    // Invisible edges for alignment")?;
+    for i in 0..44 {
+        writeln!(file, "    x{:02} -> x{:02} [style=invis];", i, i + 1)?;
+        writeln!(file, "    y{:02} -> y{:02} [style=invis];", i, i + 1)?;
+        writeln!(file, "    z{:02} -> z{:02} [style=invis];", i, i + 1)?;
+    }
+    writeln!(file, "    z44 -> z45 [style=invis];")?;
+
+    writeln!(file, "}}")?;
+
+    Ok(())
 }
 
 fn solve_p1(input: &str) -> u64 {
@@ -95,11 +242,9 @@ fn solve_p1(input: &str) -> u64 {
     value
 }
 
-fn solve_p2<F>(input: &str, num_swaps: usize, f: F) -> String
-where
-    F: Fn(u64, u64) -> u64,
-{
-    let (mut wires, gates) = parse(input);
+fn solve_p2(input: &str) -> String {
+    let (wires, gates) = parse(input);
+    write_dot(&&gates, "diagram.dot").ok();
 
     let highest_x_bits = wires
         .keys()
@@ -124,171 +269,121 @@ where
     println!("Highest y bits: {}", highest_y_bits);
     println!("Highest z bits: {}", highest_z_bits);
 
-    fn set_bits(var: &str, val: u64, wires: &mut Wires, highest_bit: u64) {
-        for index in 0..highest_bit + 1 {
-            let wire = format!("{}{:02}", var, index);
-            let set = val & (1 << index);
-            if set ==0 {
-                wires.insert(wire, 0);
-            } else {
-                wires.insert(wire, 1);
-            }
-        }
-    };
-
-    let test_system = move |gates: &Gates| {
-        let mut wires: Wires = Wires::new();
-        let mut incorrect_bits: u64 =0;
-        for y in 0..(1u64) << (highest_y_bits + 1) {
-            set_bits("y", y, &mut wires, highest_y_bits);
-            for x in 0..(1u64) << (highest_x_bits + 1) {
-                set_bits("x", x, &mut wires, highest_x_bits);
-
-                let mut wires_in = wires.clone();
-                let r = run_system(&mut wires_in, &gates, highest_z_bits);
-                if let Some(r) = r {
-                    let expected_res = f(x, y);
-                    if r != expected_res {
-                        incorrect_bits |= r ^ expected_res;
-                        //return false;
-                    }
-                } else {
-                    println!("aotusoe");
-//                    return false;
-                }
-            }
-        }
-        println!("Incorrect bits: {:b}", incorrect_bits);
-        incorrect_bits == 0
-    };
-
-    // let gates2 = create_swapped_gate_set(&gates, &vec![(0, 5), (1, 2)]);
-    // assert!(test_system(&gates2));
-
-    let gate_indices: Vec<usize> = (0..gates.len()).collect();
-    let mut seen_swaps = HashSet::new();
-    for combination in gate_indices.iter().cloned().combinations(num_swaps * 2) {
-        let swaps: Vec<_> = combination
-            .iter()
-            .cloned()
-            .permutations(num_swaps * 2)
-            .collect();
-        for swap in swaps {
-            let mut swap_set = HashSet::new();
-
-            for pair_to_swap in swap.chunks(2) {
-                let mut pair_to_swap = pair_to_swap.to_vec();
-                pair_to_swap.sort();
-                let pair_to_swap = (pair_to_swap[0], pair_to_swap[1]);
-                if swap_set.contains(&pair_to_swap) {
-                    continue;
-                }
-                swap_set.insert(pair_to_swap);
-            }
-
-            let mut swap_set_vec = swap_set.iter().cloned().collect::<Vec<_>>();
-            swap_set_vec.sort();
-            if !seen_swaps.contains(&swap_set_vec) {
-                let gates_new = create_swapped_gate_set(&gates, &swap_set_vec);
-
-                seen_swaps.insert(swap_set_vec.clone());
-
-                println!("Test the system: {:?}", &swap_set_vec);
-                if test_system(&gates_new) {
-                    let mut wires_involved = Vec::new();
-                    for (ia, ib) in swap_set_vec {
-                        wires_involved.push(gates[ia].3.clone());
-                        wires_involved.push(gates[ib].3.clone());
-                    }
-                    let mut wires_involved: Vec<_> = wires_involved.into_iter().unique().collect();
-                    wires_involved.sort();
-                    let wires_involved = wires_involved.join(",");
-
-                    // found correct swap
-                    println!("Found correct swap: {:?}", combination);
-                    println!("Wires involved: {}", &wires_involved);
-                    return wires_involved;
-                }
-                println!(" - not correct");
-            }
-        }
-    }
-
-    "no solution".to_string()
+    let invalid_gate_indices =
+        find_invalidate_gates(&gates, highest_x_bits, highest_y_bits, highest_z_bits);
+    assert_eq!(invalid_gate_indices.len(), 8);
+    let mut invalid_gate_names: Vec<String> = invalid_gate_indices
+        .into_iter()
+        .map(|j| &gates[j].3)
+        .cloned()
+        .collect();
+    invalid_gate_names.sort();
+    let r = invalid_gate_names.join(",");
+    return r;
 }
 
-fn create_swapped_gate_set(gates: &Vec<(GateType, String, String, String)>, swap_set_vec: &Vec<(usize, usize)>) -> Vec<(GateType, String, String, String)> {
-    let mut gates_new = gates.clone();
-    for &(ia, ib) in swap_set_vec {
-        //println!("Try to swap gates {} and {}", ia, ib);
-        let out1 = gates_new[ia].3.clone();
-        let out2 = gates_new[ib].3.clone();
-        gates_new[ia].3 = out2;
-        gates_new[ib].3 = out1;
+fn find_gate_with_output(gates: &[Gate], wire: &str) -> Option<usize> {
+    for (i, wire_pair) in gates.iter().enumerate() {
+        if wire_pair.3 == wire {
+            return Some(i);
+        }
     }
-    gates_new
+    None
 }
 
-fn run_system(
-    wires: &mut HashMap<String, u64>,
+fn find_gates_with_input(gates: &[Gate], wire: &str) -> Vec<usize> {
+    let mut matching_gates: Vec<usize> = Vec::new();
+    for (i, wire_pair) in gates.iter().enumerate() {
+        if wire_pair.1 == wire || wire_pair.2 == wire {
+            matching_gates.push(i);
+        }
+    }
+    matching_gates
+}
+
+fn find_invalidate_gates(
     gates: &[Gate],
+    _highest_x_bits: u64,
+    _highest_y_bits: u64,
     highest_z_bits: u64,
-) -> Option<u64> {
-    loop {
-        let mut did_set = false;
-        for (op, wire1, wire2, wire_out) in gates {
-            if wires.contains_key(wire1)
-                && wires.contains_key(wire2)
-                && !wires.contains_key(wire_out)
-            {
-                let val1 = wires[wire1];
-                let val2 = wires[wire2];
-                match op {
-                    GateType::AND => {
-                        wires.insert(wire_out.clone(), val1 & val2);
-                    }
-                    GateType::OR => {
-                        wires.insert(wire_out.clone(), val1 | val2);
-                    }
-                    GateType::XOR => {
-                        wires.insert(wire_out.clone(), val1 ^ val2);
-                    }
-                }
-                did_set = true;
+) -> Vec<usize> {
+    let mut bad_gates: Vec<usize> = Vec::new();
+
+    for (i, gate) in gates.iter().enumerate() {
+        let (op, inp1, inp2, out) = gate;
+        let connected_out_gates = find_gates_with_input(gates, out);
+        let output_types: HashSet<_> = connected_out_gates
+            .iter()
+            .map(|&j| &gates[j].0)
+            .cloned()
+            .collect();
+        let mut input_types: HashSet<GateType> = HashSet::new();
+        let input_gate1_type = find_gate_with_output(gates, inp1)
+            .map(|j| &gates[j].0)
+            .cloned();
+        if let Some(ref gate_type) = input_gate1_type {
+            input_types.insert(gate_type.clone());
+        }
+        let input_gate2_type = find_gate_with_output(gates, inp2)
+            .map(|j| &gates[j].0)
+            .cloned();
+        if let Some(ref gate_type) = input_gate2_type {
+            input_types.insert(gate_type.clone());
+        }
+
+        // Rule 1: Z-output gates shall be XOR, but not for last bit Z-output gates
+        if out.starts_with("z") && *op != GateType::XOR {
+            let out_index = out.strip_prefix("z").unwrap().parse::<u64>().unwrap();
+            if out_index < highest_z_bits {
+                println!("Bad Gate (Rule 1) #{}: {}", i, gate_to_string(gate));
+                bad_gates.push(i);
+                continue;
             }
         }
-        if !did_set {
-            break;
+
+        if *op == GateType::XOR {
+            if out == "z01" {
+                continue;
+            }
+            if ((inp1.starts_with("x") && inp2.starts_with("y"))
+                || (inp1.starts_with("y") && inp2.starts_with("x")))
+                && output_types == HashSet::from([GateType::XOR, GateType::AND])
+            {
+                continue; // ok
+            }
+            if out.starts_with("z") {
+                continue;
+            }
+            println!("Bad Gate (Rule 2) #{}: {}", i, gate_to_string(gate));
+            bad_gates.push(i);
+        } else if *op == GateType::OR {
+            if output_types == HashSet::from([GateType::XOR, GateType::AND]) {
+                continue;
+            }
+            if *out == format!("z{:02}", highest_z_bits) {
+                continue;
+            }
+            println!("Bad Gate (Rule 3) #{}: {}", i, gate_to_string(gate));
+            bad_gates.push(i);
+        } else if *op == GateType::AND {
+            if output_types == HashSet::from([GateType::OR]) {
+                continue;
+            }
+            if (inp1 == "x00" && inp2 == "y00") || (inp1 == "y00" && inp2 == "x00") {
+                continue;
+            }
+            println!("Bad Gate (Rule 4) #{}: {}", i, gate_to_string(gate));
+            bad_gates.push(i);
         }
     }
-
-    let mut value = 0;
-    for bit_index in 0..(highest_z_bits + 1) {
-        let var = format!("z{:02}", bit_index);
-        if wires.contains_key(&var) {
-            value |= wires[&var] << bit_index;
-        } else {
-            return None;
-        }
-    }
-
-    Some(value)
+    bad_gates
 }
 
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-//     #[test]
-//     fn p1_test1() {
-//     }
-
-//     #[test]
-//     fn p2_test1() {
-//     }
-// }
-
-const INPUT_EX1: &str = r#"x00: 1
+    const INPUT_EX1: &str = r#"x00: 1
 x01: 1
 x02: 1
 y00: 0
@@ -299,7 +394,7 @@ x00 AND y00 -> z00
 x01 XOR y01 -> z01
 x02 OR y02 -> z02"#;
 
-const INPUT_EX2: &str = r#"x00: 1
+    const INPUT_EX2: &str = r#"x00: 1
 x01: 0
 x02: 1
 x03: 1
@@ -348,38 +443,14 @@ tgd XOR rvg -> z12
 tnw OR pbm -> gnj
 "#;
 
-const INPUT_EX3: &str = r#"x00: 0
-x01: 1
-x02: 0
-x03: 1
-x04: 0
-x05: 1
-y00: 0
-y01: 0
-y02: 1
-y03: 1
-y04: 0
-y05: 1
-
-x00 AND y00 -> z05
-x01 AND y01 -> z02
-x02 AND y02 -> z01
-x03 AND y03 -> z03
-x04 AND y04 -> z04
-x05 AND y05 -> z00"#;
+    #[test]
+    fn p1_test1() {
+        assert_eq!(solve_p1(INPUT_EX1), 4);
+        assert_eq!(solve_p1(INPUT_EX2), 2024);
+    }
+}
 
 fn main() {
-    // assert_eq!(solve_p1(INPUT_EX1), 4);
-    // assert_eq!(solve_p1(INPUT_EX2), 2024);
-
-    
-    // assert_eq!(
-    //     solve_p2(INPUT_EX3, 2, |a, b| a & b),
-    //     "z00,z01,z02,z05".to_string()
-    // );
-    // assert_eq!(solve_p2(INPUT_EX1), );
-    println!("Tests passed!");
-
     let args: Vec<String> = env::args().collect();
     let input_file = if args.len() > 1 {
         &args[1]
@@ -392,6 +463,6 @@ fn main() {
         std::process::exit(1);
     });
 
-    // println!("Part1: {}", solve_p1(&input));
-    println!("Part2: {}", solve_p2(&input, 4, |a, b| a + b));
+    println!("Part1: {}", solve_p1(&input));
+    println!("Part2: {}", solve_p2(&input));
 }
